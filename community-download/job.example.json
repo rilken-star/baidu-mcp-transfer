@@ -1,0 +1,14 @@
+{
+  "source": "/模型/models/loras",
+  "destination": "/root/ComfyUI/models/loras",
+  "exclude_directories": [
+    "最终Z-Image",
+    "真人lora"
+  ],
+  "exclude_extensions": [
+    "png",
+    "webp",
+    "jpeg",
+    "jpg"
+  ]
+}

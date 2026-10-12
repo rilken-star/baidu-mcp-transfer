@@ -1,0 +1,28 @@
+{
+  "repository": "https://github.com/baidu-netdisk/mcp",
+  "commit": "b3983d330fea79c7b72e6b7014803e1830148d2c",
+  "files_sha256": {
+    "fileupload_tool.py": "cb7ac0453720b600c53eb4953296b7bf0103b0f9db9d4e97b10e757348ac1e0a",
+    "openapi_client/__init__.py": "f782e3b96920fdb5d69e3f8c645c14dd063c4f3933137883dda239b6c5dfc805",
+    "openapi_client/api/__init__.py": "9a674120b5ac6301fa36f807e9e318164039cb7d870029908a6403f4b2def137",
+    "openapi_client/api/auth_api.py": "7705cac7a860293212c80f1b2cf352b004c0d96b918a0aa95d4bcc898f01ad27",
+    "openapi_client/api/fileinfo_api.py": "9f400061d2774a0766e4271396d6220b7411382f36e933a2cdea2e5495e8250e",
+    "openapi_client/api/filemanager_api.py": "8f1e12d38630b5cbcc3dfa9b3be0d9e32f1dad2dd5dda2d19c3e27f1ddeff3ac",
+    "openapi_client/api/fileupload_api.py": "3970376f8bd939904049343acc6df76179679a2d574ae41d7705fca457f820a4",
+    "openapi_client/api/multimediafile_api.py": "27d0a10399cc227c425fcd40d8221ab37cd8440d291771a7f23d946ac9e7725c",
+    "openapi_client/api/userinfo_api.py": "8916bbbba837d0c68e3bc23b7082ebfbc30ae02fbe6c350299430a07350259da",
+    "openapi_client/api_client.py": "ff620b180baafe03ef5b2a54a0af9dc27b039c38ee309545af169551ac05ece4",
+    "openapi_client/configuration.py": "680aef6d315151e71b70f0a09a295298b9cb6e3d660593c5adff511ea3dd71e5",
+    "openapi_client/exceptions.py": "295351025d65a2a077dbbc9e708e8ef6a2d51824d1d3c41d57601ca57df3acbd",
+    "openapi_client/model/__init__.py": "378f5df4adf957f1dde6538759c31e551974232ffe2fed37ad981f297c251123",
+    "openapi_client/model/oauth_token_authorization_code_response.py": "0fdffeb633dfead4a0fd42e3aeecd75fd93c6118c78d740f28aef8094b01e9ac",
+    "openapi_client/model/oauth_token_device_code_response.py": "40324e73f2ba2bda519b2169a13e47cde98947b991ae806a3a923f2ea8a46225",
+    "openapi_client/model/oauth_token_device_token_response.py": "9df32181ef1ffe7635582fb29944769b8a6d3e643ec2b06bb1cee95a1934c457",
+    "openapi_client/model/oauth_token_refresh_token_response.py": "6d1d0cd2748cc2ddb1c3ee056ded7767278a642523f71d8ccf355d53f1a44e67",
+    "openapi_client/model/quotaresponse.py": "e15e27230762854c33f87e0042fa3bfefb6995387f39500ee91bd73fdef0c648",
+    "openapi_client/model/uinforesponse.py": "73ac3303b7773f171850b818d626b564ad667d1c80c24550befc34a342c41d67",
+    "openapi_client/model_utils.py": "acd0cdbe82ae28b281a4fe4644a9a8ed061dcd243e79c1668fb4b7573274e7c9",
+    "openapi_client/rest.py": "bc54de6981cef0320a85dc759e31356aff5230cbefb8468d3164849b1eaa5414"
+  },
+  "modifications": "none; task-specific guards are outside vendored files"
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "百度 MCP 服务器直传"
+  short_description: "源服务器直接上传到百度网盘，支持文件级接续、范围排除和严格目标核验"
+  default_prompt: "使用 $baidu-mcp-transfer 将服务器文件直接上传到百度网盘，先核对范围和连接，再进行传输与目标核验。"
