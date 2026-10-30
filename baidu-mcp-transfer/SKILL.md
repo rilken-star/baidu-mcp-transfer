@@ -30,3 +30,7 @@ description: Copy files directly from an SSH-accessible Linux source server to B
 - 官方原始代码位于 `vendor/`，固定来源见 `vendor/UPSTREAM.json`；任务控制与守卫在 `scripts/`，不安装故障的旧 URL/XGC 流程或原生客户端点击脚本。
 
 运行前可用 `python3 scripts/transfer.py --help`。安装与离线测试见包外 `INSTALL.md`；技能自身的操作说明包含完整示例。
+
+## 服务器上的终端界面
+
+包内 `tui/` 提供 Linux 终端上传、下载及状态界面。安装和无文件凭据输入说明见安装包 `INSTALL.md`。终端界面可显示兼容进度记录的任务；第三方 MCP 不提供进度时不能推断速度。TUI 上传的分片/并发由用户按账号能力设置，异常结果仍须先核验，不能自动重传未知文件。

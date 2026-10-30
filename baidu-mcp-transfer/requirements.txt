@@ -4,3 +4,5 @@ aiohttp>=3.11.16,<4
 python-dateutil>=2.9.0.post0,<3
 urllib3>=2.2,<3
 requests>=2.31,<3
+
+pydantic==2.10.6

@@ -39,7 +39,23 @@ def part(self, *args, **kwargs):
     return response
 
 
-official.fileupload_api.FileuploadApi.pcssuperfile2 = part
+# The original serial uploader remains the default for the packaged skill.
+# The TUI controller opts into bounded parallel uploads and durable checkpoints.
+parallel_enabled = os.environ.pop('BAIDU_TUI_PARALLEL', '') == '1'
+if parallel_enabled:
+    try:
+        chunk_mib = int(os.environ.pop('BAIDU_TUI_CHUNK_MIB', '4'))
+        workers = int(os.environ.pop('BAIDU_TUI_WORKERS', '4'))
+        if chunk_mib not in (4, 8, 16, 32, 64) or not 1 <= workers <= 8:
+            raise ValueError('Invalid transfer settings')
+    except ValueError:
+        raise SystemExit('Invalid TUI transfer settings')
+    official.CHUNK_SIZE = chunk_mib * 1024 * 1024
+    from parallel_upload import build
+    official.upload_large_file = build(official, event, workers=workers,
+        checkpoint_dir=str(Path(config['remote_state']) / 'upload-checkpoints'))
+else:
+    official.fileupload_api.FileuploadApi.pcssuperfile2 = part
 
 
 def guarded(local_file_path, remote_path):
@@ -64,10 +80,14 @@ def guarded(local_file_path, remote_path):
                 or (path.is_symlink() and not config['follow_file_links'])):
             return {'status': 'error', 'message': 'File excluded by configured scope'}
         event('starting', source_bytes=size)
+        if parallel_enabled and (size + official.CHUNK_SIZE - 1) // official.CHUNK_SIZE > 2048:
+            event('failed', diagnostic={'kind': 'too_many_parts', 'chunk_mib': official.CHUNK_SIZE // (1024*1024)})
+            return {'status': 'error', 'message': 'File requires more than 2048 parts'}
         result = original_upload(local_file_path, remote_path)
         # Never forward SDK exception text, URLs, credentials or unfiltered metadata.
         ok = isinstance(result, dict) and result.get('status') == 'success'
-        event('finished', sdk_success=ok)
+        failure = result.get('failure') if isinstance(result, dict) else None
+        event('finished', sdk_success=ok, diagnostic=failure if isinstance(failure, dict) else None)
         return {'status': 'success' if ok else 'error'}
     except Exception:
         event('failed')
