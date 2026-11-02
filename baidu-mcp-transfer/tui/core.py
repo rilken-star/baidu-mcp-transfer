@@ -479,7 +479,7 @@ def stop_task(task):
 
 
 def start_model_sync(source,target,follow_file_links=False):
-    # The policy enumerates only weight filenames and metadata, not document/media bodies.
+    # Enumerate filenames and metadata; transfer models before auxiliary files.
     sys.path.insert(0,str(PACK/'scripts'))
     from model_policy import scan_models,POLICY
     target=remote_path(target)
@@ -487,7 +487,7 @@ def start_model_sync(source,target,follow_file_links=False):
     try:source_root,inventory=scan_models(source,follow_file_links=follow_file_links)
     except (OSError,ValueError):raise SafeError('模型源路径无效、无访问权限或不是模型权重文件') from None
     if not inventory['files']:
-        raise SafeError('没有可上传的模型权重；TXT、图片等辅助文件已排除，文件链接需明确允许')
+        raise SafeError('没有可上传的文件；空文件、凭据文件已排除，模型文件链接需明确允许')
     try:_avoid_active_collision(target)
     except SafeError:raise SafeError('同一网盘目标已有上传任务；请在面板查看，不要新建重复任务。') from None
     SYNC_ROOT.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -507,9 +507,9 @@ def resume_model_sync(task):
         task={'id':'sync-'+hashlib.sha256(str(Path(task).expanduser().absolute()).encode()).hexdigest()[:12],
               'kind':'upload','backend':'baidu_sync','state':str(Path(task).expanduser().absolute())}
     job=Path(task['state']);plan=read(job/'plan.json')
-    if plan.get('policy',{}).get('mode')!='models_only' or not plan.get('inventory',{}).get('files'):
+    if plan.get('policy',{}).get('mode') not in ('models_only','models_first') or not plan.get('inventory',{}).get('files'):
         raise SafeError('此目录不是模型同步任务，未启动')
-    if not all(is_model(row['rel']) for row in plan['inventory']['files']):
+    if plan['policy']['mode']=='models_only' and not all(is_model(row['rel']) for row in plan['inventory']['files']):
         raise SafeError('模型任务清单含辅助文件，未启动')
     launcher=read(job/'launch.json')
     if alive(launcher):raise SafeError('模型任务已经运行，未重复启动')

@@ -1,26 +1,29 @@
-"""Reusable model-only synchronization policy; enumerates metadata, never media contents."""
+"""Reusable models-first synchronization policy; enumerates metadata, never media contents."""
 import os,stat
 from pathlib import Path,PurePosixPath
 
 MODEL_EXTENSIONS=frozenset({'.safetensors','.ckpt','.pt','.pth','.bin','.gguf','.sft','.onnx'})
-POLICY={'version':1,'mode':'models_only','model_extensions':sorted(MODEL_EXTENSIONS),
+POLICY={'version':2,'mode':'models_first','model_extensions':sorted(MODEL_EXTENSIONS),
         'case_insensitive':True,'overwrite':False,'skip_existing_same_name_size':True,
-        'exclude_auxiliary_files':True,'follow_directory_links':False,
+        'exclude_auxiliary_files':False,'model_order':'size_desc','auxiliary_order':'last','follow_directory_links':False,
         'resume_same_upload_session':True,'preserve_unknown_records':True,
         'safe_retry_attempts':5,'refresh_before_expiry_seconds':3600}
 
 def is_model(path):return Path(path).suffix.casefold() in MODEL_EXTENSIONS
 
-def scan_models(source,follow_file_links=False):
+def scan_models(source,follow_file_links=False,models_only=False):
     source=Path(source).expanduser().absolute()
     if not source.exists():raise ValueError('模型源路径不存在')
     if source.is_dir() and source.is_symlink():raise ValueError('不跟随目录符号链接')
     root=source if source.is_dir() else source.parent
-    if not source.is_dir() and not is_model(source):raise ValueError('当前策略仅上传模型权重文件；TXT、图片等辅助文件不上传')
+    
     files=[];issues=[];excluded=0
     def add(path):
         nonlocal excluded
-        if not is_model(path):excluded+=1;return
+        if path.name=='.env' or path.name.startswith('.env.') or path.name=='secrets.env':excluded+=1;return
+        if models_only and not is_model(path):excluded+=1;return
+        if path.is_symlink() and not is_model(path):
+            issues.append({'rel':path.relative_to(root).as_posix(),'reason':'auxiliary_file_link_not_authorized'});return
         rel=path.relative_to(root).as_posix()
         if path.is_symlink() and not follow_file_links:
             issues.append({'rel':rel,'reason':'file_symlink_not_authorized'});return
@@ -29,7 +32,7 @@ def scan_models(source,follow_file_links=False):
             if not stat.S_ISREG(s.st_mode):
                 issues.append({'rel':rel,'reason':'not_regular_file'});return
             if s.st_size==0:
-                issues.append({'rel':rel,'reason':'empty_model_file'});return
+                issues.append({'rel':rel,'reason':'empty_file'});return
             files.append({'rel':rel,'size':s.st_size,'mtime_ns':s.st_mtime_ns,'realpath':str(path.resolve())})
         except OSError:issues.append({'rel':rel,'reason':'source_stat_failed'})
     if source.is_dir():
@@ -43,7 +46,7 @@ def scan_models(source,follow_file_links=False):
             dirs[:]=kept
             for name in sorted(names):add(Path(parent)/name)
     else:add(source)
-    files.sort(key=lambda r:(-r['size'],r['rel']))
+    files.sort(key=lambda r:(not is_model(r['rel']),-r['size'],r['rel'].casefold()))
     return str(root),{'files':files,'issues':issues,'excluded_auxiliary_files':excluded,
                      'effective_files':len(files),'effective_bytes':sum(r['size'] for r in files)}
 

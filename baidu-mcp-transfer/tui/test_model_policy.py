@@ -9,12 +9,12 @@ import model_sync
 class ModelPolicyTests(unittest.TestCase):
  def setUp(self):self.tmp=tempfile.TemporaryDirectory();self.root=Path(self.tmp.name)
  def tearDown(self):self.tmp.cleanup()
- def test_only_weight_extensions_are_enumerated(self):
+ def test_models_are_first_and_auxiliary_files_are_last(self):
   for name in ('a.SAFETENSORS','b.gguf','note.txt','image.PNG','config.json','code.py'):(self.root/name).write_bytes(b'fixture')
   hidden=self.root/'.git';hidden.mkdir();(hidden/'irrelevant.pt').write_bytes(b'fixture')
   _,inv=policy.scan_models(self.root)
-  self.assertEqual({r['rel'] for r in inv['files']},{'a.SAFETENSORS','b.gguf'})
-  self.assertEqual(inv['excluded_auxiliary_files'],4)
+  self.assertEqual([r['rel'] for r in inv['files']][:2],['a.SAFETENSORS','b.gguf'])
+  self.assertEqual(len(inv['files']),6);self.assertEqual(inv['excluded_auxiliary_files'],0)
  def test_file_links_require_explicit_permission_and_directory_links_are_never_followed(self):
   source=self.root/'source';source.mkdir();outside=self.root/'outside';outside.mkdir()
   model=outside/'weights.pt';model.write_bytes(b'fixture')
@@ -23,9 +23,15 @@ class ModelPolicyTests(unittest.TestCase):
   _,after=policy.scan_models(source,True);self.assertEqual(after['effective_files'],1)
   self.assertEqual(after['files'][0]['realpath'],str(model.resolve()))
   self.assertIn('directory_symlink_not_followed',{x['reason'] for x in after['issues']})
- def test_single_auxiliary_file_is_rejected_without_scanning_siblings(self):
+ def test_single_auxiliary_file_does_not_scan_siblings(self):
   p=self.root/'note.txt';p.write_text('fixture')
-  with self.assertRaises(ValueError):policy.scan_models(p)
+  _,inv=policy.scan_models(p);self.assertEqual([r['rel'] for r in inv['files']],['note.txt'])
+ def test_credentials_excluded_and_models_sorted_by_size(self):
+  for name,size in [('small.pt',1),('big.GGUF',10),('large.txt',100),('secrets.env',2),('.env',2),('.env.local',2)]:
+   (self.root/name).write_bytes(b'x'*size)
+  _,inv=policy.scan_models(self.root)
+  self.assertEqual([r['rel'] for r in inv['files']],['big.GGUF','small.pt','large.txt'])
+  self.assertEqual(inv['excluded_auxiliary_files'],3)
  def test_target_resolution_ignores_case_and_rejects_ambiguity(self):
   api=types.SimpleNamespace(listing=lambda p:[{'server_filename':'Models','path':'/Models','isdir':1}])
   self.assertEqual(policy.resolve_target(api,'/models'),'/Models')
@@ -52,8 +58,8 @@ class ModelPolicyTests(unittest.TestCase):
   with patch.object(core,'SYNC_ROOT',self.root/'jobs'),patch.object(core,'_avoid_active_collision'),patch.object(core,'resume_model_sync',side_effect=lambda t:t):
    task=core.start_model_sync(source,'/target')
   plan=json.loads((Path(task['state'])/'plan.json').read_text())
-  self.assertEqual(plan['policy']['mode'],'models_only');self.assertFalse(plan['policy']['overwrite'])
-  self.assertEqual([r['rel'] for r in plan['inventory']['files']],['a.pt'])
+  self.assertEqual(plan['policy']['mode'],'models_first');self.assertFalse(plan['policy']['overwrite'])
+  self.assertEqual([r['rel'] for r in plan['inventory']['files']],['a.pt','note.txt'])
 
 class ControllerTests(unittest.TestCase):
  def setUp(self):
@@ -128,7 +134,28 @@ class ControllerTests(unittest.TestCase):
  def test_controller_rejects_auxiliary_entries_even_if_manually_injected(self):
   (self.source/'private.txt').write_text('fixture')
   plan=json.loads((self.job/'plan.json').read_text());row=plan['inventory']['files'][0]
-  plan['inventory']['files']=[{**row,'rel':'private.txt'}];core.atomic(self.job/'plan.json',plan)
+  plan['policy']['mode']='models_only';plan['inventory']['files']=[{**row,'rel':'private.txt'}];core.atomic(self.job/'plan.json',plan)
   self.assertEqual(model_sync.run(self.job),1);self.assertEqual(self.sent,[])
+
+ def test_large_models_first_then_auxiliary_even_with_auxiliary_checkpoint(self):
+  for name,size in [('big.pt',7*1024**2),('note.txt',6*1024**2),('photo.png',5*1024**2)]:
+   with (self.source/name).open('wb') as f:f.truncate(size)
+  source,inv=policy.scan_models(self.source)
+  inv['files'].reverse()
+  core.atomic(self.job/'plan.json',{'source':source,'target':'/models','inventory':inv,'policy':dict(policy.POLICY)})
+  core.atomic(self.job/'checkpoints/aux.json',{'path':str(self.source/'note.txt')})
+  self.assertEqual(model_sync.run(self.job),0)
+  self.assertEqual(self.sent,['/Models/big.pt','/Models/weights.safetensors','/Models/note.txt','/Models/photo.png'])
+ def test_unknown_model_blocks_all_auxiliary_uploads(self):
+  with (self.source/'note.txt').open('wb') as f:f.truncate(5*1024**2)
+  source,inv=policy.scan_models(self.source)
+  core.atomic(self.job/'plan.json',{'source':source,'target':'/models','inventory':inv,'policy':dict(policy.POLICY)})
+  core.atomic(self.job/'results.json',{'weights.safetensors':{'state':'unknown','size':5*1024**2}})
+  self.assertEqual(model_sync.run(self.job),0);self.assertEqual(self.sent,[])
+  self.assertNotIn('note.txt',json.loads((self.job/'results.json').read_text()))
+ def test_previous_uploads_are_not_repeated(self):
+  source,inv=policy.scan_models(self.source)
+  core.atomic(self.job/'results.json',{'weights.safetensors':{'state':'uploaded','size':5*1024**2}})
+  self.assertEqual(model_sync.run(self.job),0);self.assertEqual(self.sent,[])
 
 if __name__=='__main__':unittest.main()

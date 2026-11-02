@@ -1,4 +1,4 @@
-"""Model-only upload controller with durable per-file and multipart state."""
+"""Models-first upload controller with durable per-file and multipart state."""
 def run(job_path):
     import contextlib
     with contextlib.ExitStack() as resources:
@@ -80,7 +80,7 @@ def run(job_path):
         try:
             if plan.get('predecessor'):
                 prior=Path(plan['predecessor'])
-                status['phase']='waiting_for_regular_files';save()
+                status['phase']='waiting_for_models';save()
                 while True:
                     previous=read_json(prior/'status.json',{})
                     if previous.get('phase') in ('complete','needs_attention'):
@@ -91,6 +91,11 @@ def run(job_path):
                             own_paths={r['rel'].casefold() for r in plan['inventory']['files']}
                             if any(rel.casefold() in own_paths for rel,r in previous_results.items() if r.get('state')=='unknown'):
                                 raise worker.Attention('Uncertain destination overlaps linked-file task; stopped')
+                        prior_plan=read_json(prior/'plan.json',{})
+                        prior_results=read_json(prior/'results.json',{})
+                        from model_policy import is_model
+                        if any(prior_results.get(r['rel'],{}).get('state') not in ('uploaded','skipped_same_name_size') for r in prior_plan.get('inventory',{}).get('files',[]) if is_model(r['rel'])):
+                            raise worker.Attention('Model stage incomplete; auxiliary uploads remain queued')
                         break
                     pid=previous.get('pid')
                     if pid:
@@ -98,13 +103,14 @@ def run(job_path):
                         except ProcessLookupError: raise worker.Attention('Previous task stopped without final status')
                     time.sleep(30)
             from model_policy import resolve_target, chunk_mib, resumable_checkpoint, is_model
-            if plan.get('policy',{}).get('mode')!='models_only':
+            mode=plan.get('policy',{}).get('mode')
+            if mode not in ('models_only','models_first'):
                 raise worker.Attention('Model-only policy missing; task not started')
             if not SOURCE.is_dir() or SOURCE.is_symlink():
                 raise worker.Attention('Model source root must be a real directory')
             if type(plan.get('follow_file_links',False)) is not bool:
                 raise worker.Attention('File-link authorization must be explicit boolean')
-            if not all(is_model(row['rel']) and type(row['size']) is int and row['size']>0 for row in plan['inventory']['files']):
+            if not all((mode!='models_only' or is_model(row['rel'])) and type(row['size']) is int and row['size']>0 and Path(row['rel']).name not in ('.env','secrets.env') and not Path(row['rel']).name.startswith('.env.') for row in plan['inventory']['files']):
                 raise worker.Attention('Auxiliary or invalid model entries rejected; no upload started')
             pair_dir=Path.home()/'.local/state/baidu-sync/.target-locks'
             pair_dir.mkdir(parents=True,exist_ok=True,mode=0o700)
@@ -144,14 +150,18 @@ def run(job_path):
             cls.xpanfilecreate=guarded(create)
             install_sdk_retry(official,event=event)
             official.CHUNK_SIZE=selected_chunk*1024*1024
-            atomic_json(JOB/'transfer-settings.json',{'chunk_mib':selected_chunk,'workers':4,'policy':'models_only','updated_at':time.time()})
+            atomic_json(JOB/'transfer-settings.json',{'chunk_mib':selected_chunk,'workers':4,'policy':mode,'updated_at':time.time()})
             uploader=build(official,event,workers=4,checkpoint_dir=str(JOB/'checkpoints'))
             status['phase']='running'; save()
             local_counts=collections.Counter(r['rel'].casefold() for r in plan['inventory']['files'])
             resume_sources={read_json(p,{}).get('path') for p in (JOB/'checkpoints').glob('*.json')}
-            ordered=sorted(plan['inventory']['files'],key=lambda r:0 if str(SOURCE/r['rel']) in resume_sources else 2 if results.get(r['rel'],{}).get('state') in ('attempting','unknown') else 1)
+            ordered=sorted(plan['inventory']['files'],key=lambda r:(not is_model(r['rel']),0 if str(SOURCE/r['rel']) in resume_sources else 2 if results.get(r['rel'],{}).get('state') in ('attempting','unknown') else 1,-r['size'],r['rel'].casefold()))
             for row in ordered:
                 rel=row['rel'];size=row['size']
+                if not is_model(rel) and any(results.get(m['rel'],{}).get('state') not in ('uploaded','skipped_same_name_size') for m in ordered if is_model(m['rel'])):
+                    status['reason']='Model stage incomplete; auxiliary uploads remain queued'
+                    break
+                status['upload_stage']='models' if is_model(rel) else 'auxiliary'
                 if rel in results and results[rel]['state'] in ('uploaded','skipped_same_name_size','case_conflict','different_conflict'):
                     continue
                 if local_counts[rel.casefold()]!=1:

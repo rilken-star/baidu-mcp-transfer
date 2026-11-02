@@ -11,7 +11,7 @@ description: Copy files directly from an SSH-accessible Linux source server to B
 
 ## 模型目录同步默认策略
 
-用户要求上传模型或 LoRA 时，优先在获授权服务器上运行 `baidu-tui --sync-models SOURCE --to TARGET`；仅用户明确允许文件链接时添加 `--follow-file-links`。默认只上传模型权重，不上传 TXT、图片和其他辅助文件；网盘路径忽略大小写，同名同大小跳过，冲突保留，不覆盖。用 `--resume-models JOB` 复用任务，不能为恢复而另起重复上传或清空 unknown 记录。详细约束见 [模型上传策略](references/model-upload-policy.md)。普通文件上传只有用户明确要求时使用 `--upload ... --all-files`。旧小文件任务被用户取消后不得擅自恢复。
+用户要求上传模型或 LoRA 时，优先在获授权服务器上运行 `baidu-tui --sync-models SOURCE --to TARGET`；仅用户明确允许文件链接时添加 `--follow-file-links`。默认先上传模型权重（按大小从大到小），最后上传 TXT、图片和其他辅助文件；网盘路径忽略大小写，同名同大小跳过，冲突保留，不覆盖。用 `--resume-models JOB` 复用任务，不能为恢复而另起重复上传或清空 unknown 记录。详细约束见 [模型上传策略](references/model-upload-policy.md)。普通文件上传只有用户明确要求时使用 `--upload ... --all-files`。辅助文件必须等待模型阶段完成；原有隔离文件继续保留，不自动重传。
 
 
 ## 工作流程

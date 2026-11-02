@@ -15,11 +15,11 @@ from pathlib import Path
 import core
 
 PHASE = {'starting':'启动中','queued':'待启动','scanning':'整理清单','processing':'传输中',
-         'verifying':'核验中','complete':'已完成','stopped':'已停止','needs_attention':'需处理',
+         'verifying':'核验中','complete':'已完成','stopped':'已停止','needs_attention':'需处理','waiting_for_models':'等待模型完成',
          'failed':'失败','interrupted':'进程已退出','mcp_online':'在线','running':'传输中','waiting_for_regular_files':'排队中'}
 STAGE = {'hashing':'计算分片校验值','starting_download':'准备下载','starting':'计算分片校验值 / 准备上传','metadata':'查询网盘元信息',
          'sending_part':'正在发送分片','accepted_part':'分片已确认','finished':'文件传输结束，等待核验',
-         'downloading':'正在接收文件','listing':'列出指定目录','complete':'完成','retry_wait':'网络重试等待','verifying_after_error':'请求异常，核验网盘结果','unknown_telemetry':'未接入进度','waiting_for_regular_files':'等待普通文件同步完成'}
+         'downloading':'正在接收文件','listing':'列出指定目录','complete':'完成','retry_wait':'网络重试等待','verifying_after_error':'请求异常，核验网盘结果','unknown_telemetry':'未接入进度','waiting_for_regular_files':'等待普通文件同步完成','waiting_for_models':'等待模型上传完成'}
 
 
 def width(s):
@@ -102,7 +102,7 @@ class App:
             if not source:return
             target=self.prompt(win,'新建上传','网盘目标目录（不会覆盖同名文件）：','/百度网盘传输')
             if not target:return
-            hint='仅模型权重；TXT/图片等不传；仅跟随模型文件链接，目录链接不跟随。'
+            hint='先模型（从大到小），最后TXT/图片等辅助文件；仅跟随模型文件链接，不跟随目录链接。'
         else:
             source=self.prompt(win,'新建下载','网盘中的文件 / 目录路径：','/百度网盘传输/example.txt')
             if not source:return
@@ -225,7 +225,7 @@ def main():
     parser=argparse.ArgumentParser(description='百度网盘上传 / 下载 TUI（退出界面不停止任务）')
     parser.add_argument('--authorize',action='store_true',help='隐藏输入应用密钥和授权码，配置可自动续期的授权')
     parser.add_argument('--check-dir',default='/',help='授权后只读验证的网盘目录，默认 /')
-    parser.add_argument('--sync-models',metavar='LOCAL',help='仅上传模型权重，跳过TXT、图片和其他辅助文件')
+    parser.add_argument('--sync-models',metavar='LOCAL',help='先上传模型（从大到小），最后上传TXT、图片等辅助文件')
     parser.add_argument('--resume-models',metavar='JOB',help='续传已有模型任务，不新建重复任务')
     parser.add_argument('--all-files',action='store_true',help='配合 --upload 显式使用原普通文件上传模式')
     parser.add_argument('--follow-file-links',action='store_true',help='明确允许模型文件链接，不跟随目录链接')
