@@ -1,5 +1,6 @@
 """Bounded concurrent multipart upload for the isolated Baidu transfer controller."""
 import concurrent.futures
+import contextlib
 import hashlib
 import io
 import json
@@ -19,6 +20,8 @@ def build(official, event, workers=8, checkpoint_dir=None):
         done_bytes = 0
         done_count = 0
         failure = {}
+        part_contexts = contextlib.ExitStack()
+        part_local = threading.local()
         checkpoint_root = checkpoint_dir or os.path.join(os.path.expanduser('~'), '.local/state/baidu-tui/upload-checkpoints')
         checkpoint_path = os.path.join(checkpoint_root, hashlib.sha256(remote_path.encode()).hexdigest()+'.json')
         def save_checkpoint(value):
@@ -34,6 +37,10 @@ def build(official, event, workers=8, checkpoint_dir=None):
             info = {'part':i, 'attempt':attempt, 'kind':kind}
             if error is not None:
                 info['error_type'] = type(error).__name__
+                nested=getattr(error,'diagnostic',{})
+                if isinstance(nested,dict):
+                    for key in ('operation_stage','error_type','cause_types','http_status','api_errno','outcome','attempt'):
+                        if key in nested:info[key]=nested[key]
                 status = getattr(error, 'status', None)
                 if type(status) is int: info['http_status'] = status
                 errno = getattr(error, 'errno', None)
@@ -94,17 +101,20 @@ def build(official, event, workers=8, checkpoint_dir=None):
                         record_failure(i,0,'source_read_error',error=error);return False
                     if len(data)!=size or hashlib.md5(data).hexdigest()!=hashes[i]:
                         record_failure(i,0,'source_mismatch');return False
-                    for attempt in range(8):
+                    attempts = 1 if getattr(official.fileupload_api.FileuploadApi, "_baidu_safe_retry", False) else 8
+                    for attempt in range(attempts):
                         try:
                             cfg = official.openapi_client.Configuration()
                             cfg.connection_pool_maxsize=4
                             cfg.retries=0
-                            with official.openapi_client.ApiClient(cfg) as part_client:
-                                part_api=official.fileupload_api.FileuploadApi(part_client)
-                                stream=io.BytesIO(data);stream.name=os.path.basename(path)
-                                result=part_api.pcssuperfile2(access_token=access_token,
-                                    partseq=str(i),path=remote_path,uploadid=uploadid,
-                                    type='tmpfile',file=stream,_request_timeout=120)
+                            if not hasattr(part_local,'api'):
+                                with lock:
+                                    part_client=part_contexts.enter_context(official.openapi_client.ApiClient(cfg))
+                                part_local.api=official.fileupload_api.FileuploadApi(part_client)
+                            stream=io.BytesIO(data);stream.name=os.path.basename(path)
+                            result=part_local.api.pcssuperfile2(access_token=access_token,
+                                partseq=str(i),path=remote_path,uploadid=uploadid,
+                                type='tmpfile',file=stream,_request_timeout=120)
                             if result.get('md5')==hashes[i]:
                                 with lock:
                                     completed.add(i);saved['completed']=sorted(completed);save_checkpoint(saved)
@@ -115,7 +125,7 @@ def build(official, event, workers=8, checkpoint_dir=None):
                             record_failure(i,attempt+1,'part_response_mismatch',response=result)
                         except Exception as error:
                             record_failure(i,attempt+1,'part_request_failed',error=error)
-                        if attempt<7:time.sleep(min(30,2**attempt))
+                        if attempt<attempts-1:time.sleep(min(30,2**attempt))
                     return False
                 # Limit the queue to the actual number of connections; stop sending on failure.
                 with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
@@ -140,8 +150,10 @@ def build(official, event, workers=8, checkpoint_dir=None):
                     return {'status':'error','message':'创建文件失败: %s' % result.get('errno')}
                 os.unlink(checkpoint_path)
                 return {'status':'success'}
-        except Exception:
-            return {'status':'error','message':'parallel transfer failed'}
+        except Exception as error:
+            from safe_retry import diagnostic
+            return {'status':'error','message':'parallel transfer failed','failure':getattr(error,'diagnostic',diagnostic(error,'multipart',1))}
         finally:
+            part_contexts.close()
             if fd is not None:os.close(fd)
     return upload

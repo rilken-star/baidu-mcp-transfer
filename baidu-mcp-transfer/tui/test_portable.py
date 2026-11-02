@@ -25,7 +25,7 @@ class PortableTests(unittest.TestCase):
             root=Path(tmp);src=root/'input';src.write_bytes(b'test');pkg=root/'custom package';pkg.mkdir()
             with patch.object(core,'PACK',pkg), patch.object(core,'JOBS',root/'jobs'), \
                  patch.object(core,'CODE_ROOT',root/'none'), patch.object(core,'STATE_ROOT',root/'none2'), \
-                 patch.object(core,'PROC_ROOT',root/'none3'), patch.object(core,'_spawn'):
+                 patch.object(core,'PROC_ROOT',root/'none3'), patch.object(core,'SYNC_ROOT',root/'none4'), patch.object(core,'_spawn'):
                 task=core.start_upload(str(src),'/backup')
                 cfg=core.read(task['config'])
                 self.assertEqual(cfg['remote_code'],str(pkg))
@@ -69,5 +69,38 @@ class PortableTests(unittest.TestCase):
             self.assertEqual(state['sent'],[2,3])
             self.assertEqual(state['precreate_calls'],1)
             self.assertFalse(list(checkpoint.iterdir()))
+
+
+class ConnectionReuseTests(unittest.TestCase):
+    def check_upload(self,fail=False):
+        import hashlib
+        counts={'opened':0,'closed':0,'parts':0,'published':0}
+        class Config:pass
+        class Client:
+            def __init__(self,*args):pass
+            def __enter__(self):counts['opened']+=1;return self
+            def __exit__(self,*args):counts['closed']+=1
+        class API:
+            def __init__(self,*args):pass
+            def xpanfileprecreate(self,**kw):return {'errno':0,'uploadid':'fixture-session'}
+            def pcssuperfile2(self,**kw):
+                counts['parts']+=1
+                if fail:raise ConnectionError('fixture-network-failure')
+                return {'md5':hashlib.md5(kw['file'].read()).hexdigest()}
+            def xpanfilecreate(self,**kw):counts['published']+=1;return {'errno':0}
+        official=types.SimpleNamespace(CHUNK_SIZE=4,openapi_client=types.SimpleNamespace(Configuration=Config,ApiClient=Client),fileupload_api=types.SimpleNamespace(FileuploadApi=API))
+        with tempfile.TemporaryDirectory() as tmp:
+            p=Path(tmp)/'fixture.bin';p.write_bytes(b'abcdefghijklmnop')
+            upload=parallel_upload.build(official,lambda *a,**kw:None,workers=1,checkpoint_dir=str(Path(tmp)/'state'))
+            with patch.object(parallel_upload.time,'sleep'):result=upload(str(p),'/target/file',16,'fixture-token')
+        return counts,result
+    def test_part_connection_reused_across_file(self):
+        counts,result=self.check_upload()
+        self.assertEqual(result['status'],'success');self.assertEqual(counts['parts'],4)
+        self.assertEqual(counts['opened'],2);self.assertEqual(counts['closed'],2)
+    def test_part_connection_closed_on_error_without_publishing(self):
+        counts,result=self.check_upload(True)
+        self.assertEqual(result['status'],'error');self.assertEqual(counts['published'],0)
+        self.assertEqual(counts['opened'],2);self.assertEqual(counts['closed'],2)
 
 if __name__=='__main__':unittest.main()

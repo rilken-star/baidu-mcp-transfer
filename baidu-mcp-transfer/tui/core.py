@@ -14,6 +14,7 @@ PACK = Path(os.environ.get('BAIDU_TUI_PACK', str(Path(__file__).resolve().parent
 BASE = Path(__file__).resolve().parent
 STATE_HOME = Path(os.environ.get('BAIDU_TUI_STATE', str(Path.home() / '.local/state/baidu-tui'))).expanduser()
 JOBS = STATE_HOME / 'jobs'
+SYNC_ROOT = Path(os.environ.get('BAIDU_TUI_SYNC_ROOT', str(STATE_HOME.parent / 'baidu-sync'))).expanduser()
 SECRET = Path(os.environ['BAIDU_TUI_SECRETS_FILE']).expanduser() if os.environ.get('BAIDU_TUI_SECRETS_FILE') else None
 CHUNK = 4 * 1024 * 1024
 CODE_ROOT = Path(os.environ.get('BAIDU_TUI_DISCOVERY_CODE_ROOT', str(Path.home() / 'project/code'))).expanduser()
@@ -122,6 +123,37 @@ def discover_mcp_processes(known_children):
         pass
 
 
+def discover_sync_jobs():
+    # Only this channel's task metadata; do not traverse user model directories.
+    for path in sorted(SYNC_ROOT.glob('*/status.json')):
+        state = path.parent
+        progress = read(path)
+        plan = read(state / 'plan.json')
+        if not isinstance(progress, dict) or not isinstance(plan, dict):
+            continue
+        if not all(k in progress for k in ('phase', 'total_files', 'total_bytes', 'counts')):
+            continue
+        if not isinstance(plan.get('source'), str) or not isinstance(plan.get('target'), str):
+            continue
+        launcher = read(state / 'launch.json')
+        pid = progress.get('pid')
+        ticks = launcher.get('start_ticks') if launcher.get('pid') == pid else None
+        if ticks is None and type(pid) is int:
+            actual = identity(pid)
+            try:
+                boot = next(int(line.split()[1]) for line in Path('/proc/stat').read_text().splitlines() if line.startswith('btime '))
+                created = boot + int(actual) / os.sysconf('SC_CLK_TCK')
+                if abs(created - float(progress.get('started_at', 0))) < 15:
+                    ticks = actual
+            except (OSError, TypeError, ValueError, StopIteration):
+                pass
+        yield {'id':'sync-' + hashlib.sha256(str(state).encode()).hexdigest()[:12],
+            'kind':'upload', 'backend':'baidu_sync', 'state':str(state),
+            'pid':pid, 'start_ticks':ticks, 'managed':False,
+            'created_at':progress.get('started_at', 0),
+            'title':'同步上传 ' + PurePosixPath(plan['target']).name + ('（文件链接）' if plan.get('follow_file_links') else '（普通文件）')}
+
+
 def jobs():
     JOBS.mkdir(mode=0o700, parents=True, exist_ok=True)
     rows = []
@@ -129,6 +161,10 @@ def jobs():
     children = set()
     for path in JOBS.glob('*/task.json'):
         row = read(path)
+        if row.get('kind') == 'upload' and row.get('backend') == 'baidu_sync' and isinstance(row.get('state'), str):
+            row['_path'] = str(path)
+            rows.append(row)
+            continue
         if row.get('kind') in ('upload', 'download') and isinstance(row.get('config'), str):
             row['_path'] = str(path)
             cfg = read(row['config'])
@@ -155,6 +191,13 @@ def jobs():
                      'title': '自动发现' + ('上传 ' if kind == 'upload' else '下载 ')
                               + PurePosixPath(cfg['target']).name,
                      'created_at': created})
+    sync_states = {r.get('state') for r in rows if r.get('backend') == 'baidu_sync'}
+    for row in discover_sync_jobs():
+        if row['state'] not in sync_states:
+            rows.append(row)
+            sync_states.add(row['state'])
+        if alive(row):
+            children.add(row['pid'])
     rows.extend(discover_mcp_processes(children))
     return sorted(rows, key=lambda x: (x.get('created_at', 0), x['id']))
 
@@ -169,7 +212,44 @@ def register_existing(config, title='DeepSeek / Maya 备份'):
                'created_at': time.time(), 'config': str(config), 'managed': False})
 
 
+def sync_snapshot(task):
+    state = Path(task['state'])
+    progress = read(state / 'status.json')
+    plan = read(state / 'plan.json')
+    results = read(state / 'results.json')
+    running = alive(task)
+    phase = progress.get('phase', 'starting' if running else 'interrupted')
+    total = int(progress.get('total_bytes', 0))
+    total_files = int(progress.get('total_files', 0))
+    counts = progress.get('counts', {})
+    uploaded = int(progress.get('uploaded_bytes', 0))
+    skipped = int(progress.get('skipped_bytes', 0))
+    files = int(counts.get('uploaded', 0)) + int(counts.get('skipped_same_name_size', 0))
+    current = progress.get('current') or {}
+    current_size = int(current.get('size', 0))
+    offset = max(0, min(current_size, int(current.get('completed_bytes', 0))))
+    if not running and phase not in ('complete', 'needs_attention', 'failed', 'stopped'):
+        phase = 'interrupted'
+    if phase == 'needs_attention' and not progress.get('reason') and files == total_files and read(state / 'followup.json').get('file_links_authorized'):
+        phase = 'complete'
+    message = '新上传 %d 个；同名同大小跳过 %d 个（忽略大小写）。' % (counts.get('uploaded', 0), counts.get('skipped_same_name_size', 0))
+    conflicts = sum(int(counts.get(k, 0)) for k in ('case_conflict', 'different_conflict', 'source_changed', 'unknown', 'chunk_limit'))
+    if conflicts: message += ' 需处理 %d 个，未覆盖。' % conflicts
+    if progress.get('reason'): message += ' ' + clean(progress['reason'])
+    return {**task, 'phase':phase, 'running':running, 'total':total,
+        'verified':uploaded+skipped, 'accounted':min(total, uploaded+skipped+offset),
+        'rate_bytes':uploaded+offset, 'files':files, 'total_files':total_files,
+        'current':next((rel for rel, value in results.items() if value.get('state') == 'attempting'), ''),
+        'current_size':current_size, 'current_bytes':offset,
+        'stage':current.get('stage', 'complete' if phase == 'complete' else 'waiting_for_regular_files' if phase == 'waiting_for_regular_files' else 'metadata'),
+        'source':plan.get('source', ''), 'target':plan.get('target', ''),
+        'pending':max(0, total_files-files), 'message':message,
+        'checked_at':progress.get('updated_at', 0), 'api_error_code':None}
+
+
 def snapshot(task):
+    if task.get('backend') == 'baidu_sync':
+        return sync_snapshot(task)
     if task['kind'] == 'mcp':
         running = alive(task)
         return {**task, 'phase': 'mcp_online' if running else 'stopped', 'running': running,
@@ -228,11 +308,18 @@ def snapshot(task):
         stage = 'complete'
     accounted = verified + (0 if file_verified else offset)
     accounted = min(total, accounted) if total else 0
+    rate_bytes = accounted
+    if task['kind'] == 'upload':
+        sent = sum(row['size'] for row in manifest.get('files', [])
+            if ledger.get(row['rel'], {}).get('stage') == 'verified'
+            and ledger[row['rel']].get('started_at') is not None
+            and ledger[row['rel']].get('source') == {'size':row['size'], 'mtime_ns':row.get('mtime_ns')})
+        rate_bytes = sent + (0 if file_verified else offset)
     diagnostic = parts.get('diagnostic') if isinstance(parts, dict) else None
     diagnostic_message = ('分片数超过 2048，需调整分片大小并核验结果后处理。'
                           if isinstance(diagnostic, dict) and diagnostic.get('kind') == 'too_many_parts' else '')
     return {**task, 'phase': phase, 'running': running, 'total': total,
-            'verified': verified, 'accounted': accounted,
+            'verified': verified, 'accounted': accounted, 'rate_bytes': rate_bytes,
             'files': verified_files,
             'total_files': progress.get('effective_files', 0) or (manifest.get('effective_files', 0) if task['kind'] == 'upload' else 0),
             'current': current, 'current_size': size, 'current_bytes': offset,
@@ -291,6 +378,12 @@ def _avoid_active_collision(target, name=None):
             continue
         snap = snapshot(task)
         if not snap['running']:
+            continue
+        if task.get('backend') == 'baidu_sync':
+            active_target = snap['target'].rstrip('/').casefold()
+            wanted = (target.rstrip('/') + '/' + name if name else target).rstrip('/').casefold()
+            if wanted == active_target or wanted.startswith(active_target + '/') or active_target.startswith(wanted + '/'):
+                raise SafeError('目标与正在运行的上传任务重叠，请换一个网盘目录')
             continue
         cfg = read(task['config'])
         manifest = read(Path(cfg['remote_state']) / 'manifest.json')
@@ -364,6 +457,8 @@ def resume_download(task):
 
 
 def stop_task(task):
+    if task.get('backend') == 'baidu_sync':
+        raise SafeError('此同步任务当前仅支持查看，停止请通过原同步任务处理。')
     if task['kind'] == 'mcp':
         raise SafeError('此 MCP 未接入传输状态，不能从这里停止。')
     snap = snapshot(task)
@@ -381,3 +476,49 @@ def stop_task(task):
             os.kill(owner['pid'], signal.SIGTERM)
         else:
             raise SafeError('后台进程尚未就绪，请稍后刷新')
+
+
+def start_model_sync(source,target,follow_file_links=False):
+    # The policy enumerates only weight filenames and metadata, not document/media bodies.
+    sys.path.insert(0,str(PACK/'scripts'))
+    from model_policy import scan_models,POLICY
+    target=remote_path(target)
+    if target=='/':raise SafeError('请选择具体的网盘目标目录')
+    try:source_root,inventory=scan_models(source,follow_file_links=follow_file_links)
+    except (OSError,ValueError):raise SafeError('模型源路径无效、无访问权限或不是模型权重文件') from None
+    if not inventory['files']:
+        raise SafeError('没有可上传的模型权重；TXT、图片等辅助文件已排除，文件链接需明确允许')
+    try:_avoid_active_collision(target)
+    except SafeError:raise SafeError('同一网盘目标已有上传任务；请在面板查看，不要新建重复任务。') from None
+    SYNC_ROOT.mkdir(parents=True,exist_ok=True,mode=0o700)
+    job=SYNC_ROOT/(time.strftime('%Y%m%d-%H%M%S')+'-models-'+uuid.uuid4().hex[:6])
+    job.mkdir(mode=0o700)
+    atomic(job/'plan.json',{'source':source_root,'target':target,'inventory':inventory,
+        'follow_file_links':bool(follow_file_links),'policy':dict(POLICY)})
+    task={'id':'sync-'+hashlib.sha256(str(job).encode()).hexdigest()[:12],
+          'kind':'upload','backend':'baidu_sync','state':str(job),'managed':True}
+    return resume_model_sync(task)
+
+
+def resume_model_sync(task):
+    sys.path.insert(0,str(PACK/'scripts'))
+    from model_policy import is_model
+    if isinstance(task,(str,Path)):
+        task={'id':'sync-'+hashlib.sha256(str(Path(task).expanduser().absolute()).encode()).hexdigest()[:12],
+              'kind':'upload','backend':'baidu_sync','state':str(Path(task).expanduser().absolute())}
+    job=Path(task['state']);plan=read(job/'plan.json')
+    if plan.get('policy',{}).get('mode')!='models_only' or not plan.get('inventory',{}).get('files'):
+        raise SafeError('此目录不是模型同步任务，未启动')
+    if not all(is_model(row['rel']) for row in plan['inventory']['files']):
+        raise SafeError('模型任务清单含辅助文件，未启动')
+    launcher=read(job/'launch.json')
+    if alive(launcher):raise SafeError('模型任务已经运行，未重复启动')
+    progress={'phase':'starting','started_at':time.time(),'pid':0,
+        'total_files':plan['inventory']['effective_files'],'total_bytes':plan['inventory']['effective_bytes'],
+        'counts':{},'uploaded_bytes':0,'skipped_bytes':0,'current':{},'updated_at':time.time()}
+    atomic(job/'status.json',progress)
+    with open(os.devnull,'r+b') as null:
+        p=subprocess.Popen([python_executable(),str(PACK/'scripts/model_sync.py'),str(job)],
+            stdin=null,stdout=null,stderr=null,start_new_session=True,close_fds=True)
+    atomic(job/'launch.json',{'pid':p.pid,'start_ticks':identity(p.pid),'started_at':time.time()})
+    return {**task,'pid':p.pid,'start_ticks':identity(p.pid)}

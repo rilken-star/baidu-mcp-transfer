@@ -9,6 +9,11 @@ description: Copy files directly from an SSH-accessible Linux source server to B
 
 先阅读 [运行说明](references/operations.md)，使用本技能目录的 `scripts/transfer.py`。它与全局 MCP 配置相互独立，安装或检查状态不会启动上传或授权弹窗。
 
+## 模型目录同步默认策略
+
+用户要求上传模型或 LoRA 时，优先在获授权服务器上运行 `baidu-tui --sync-models SOURCE --to TARGET`；仅用户明确允许文件链接时添加 `--follow-file-links`。默认只上传模型权重，不上传 TXT、图片和其他辅助文件；网盘路径忽略大小写，同名同大小跳过，冲突保留，不覆盖。用 `--resume-models JOB` 复用任务，不能为恢复而另起重复上传或清空 unknown 记录。详细约束见 [模型上传策略](references/model-upload-policy.md)。普通文件上传只有用户明确要求时使用 `--upload ... --all-files`。旧小文件任务被用户取消后不得擅自恢复。
+
+
 ## 工作流程
 
 1. 根据用户要求确定 SSH 主机、端口、源目录、网盘目标、排除范围、最小文件大小、是否跟随文件软链接和是否允许覆盖。沿用明确的授权；缺少有影响的信息时询问。不要沿用另一任务的路径、例外许可或令牌。
@@ -33,4 +38,9 @@ description: Copy files directly from an SSH-accessible Linux source server to B
 
 ## 服务器上的终端界面
 
-包内 `tui/` 提供 Linux 终端上传、下载及状态界面。安装和无文件凭据输入说明见安装包 `INSTALL.md`。终端界面可显示兼容进度记录的任务；第三方 MCP 不提供进度时不能推断速度。TUI 上传的分片/并发由用户按账号能力设置，异常结果仍须先核验，不能自动重传未知文件。
+包内 `tui/` 提供 Linux 终端上传、下载及状态界面。安装、隐藏输入及受保护服务器文件授权说明见安装包 `INSTALL.md`。终端界面可显示兼容进度记录的任务；第三方 MCP 不提供进度时不能推断速度。TUI 上传的分片/并发由用户按账号能力设置，异常结果仍须先核验，不能自动重传未知文件。
+
+
+## 自动续期
+
+使用受保护服务器凭据文件时，按 [自动续期说明](references/auto-refresh.md) 在到期前一小时按需刷新。凭据只保存在用户明确指定服务器上的受保护文件，不加入任务配置、程序包、版本库、命令参数或日志；不在回复中输出其值。只有 Access Token 时不能推定具有续期能力。刷新失败或结果不确定时停止，不反复自动重试；用户重新授权后仍需核验 attempting/unknown 文件，不自动清空旧账本。

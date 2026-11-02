@@ -1,6 +1,6 @@
 # 安装后使用
 
-本机控制程序需要 Python 3.9+、OpenSSH；源服务器需要 Linux、Python 3.12+（含 venv）、可访问 PyPI 和百度 API。macOS 使用系统隐藏框输入百度令牌；Linux/Windows WSL 使用交互终端隐藏输入。本包不依赖百度桌面客户端，也不修改 Codex 的全局 MCP 配置。
+本机控制程序需要 Python 3.9+、OpenSSH；源服务器需要 Linux、Python 3.10+（含 venv）、可访问 PyPI 和百度 API。macOS 使用系统隐藏框输入百度令牌；Linux/Windows WSL 使用交互终端隐藏输入。本包不依赖百度桌面客户端，也不修改 Codex 的全局 MCP 配置。
 
 官方实现固定为 `baidu-netdisk/mcp` 提交 `b3983d330fea79c7b72e6b7014803e1830148d2c`，单文件大于 4 MiB 时分片。它不是百度平台新发行的官方安装包；本包是围绕该官方实现提供的可迁移 Codex 技能及控制脚本。
 
@@ -49,7 +49,7 @@ python3 "$SKILL/scripts/transfer.py" plan --config "$JOB"
 python3 "$SKILL/scripts/transfer.py" start --config "$JOB"
 ```
 
-只有 start/verify 显式请求一次隐藏令牌输入。不要把 AccessToken 发到聊天或写在终端参数里。令牌必须有相应网盘权限；本包不代建百度应用或反复触发 OAuth 页面。认证失效或失败时停止，用户处理后才重新运行。进程中使用的令牌无法保证逐字节擦除，但不写磁盘；控制器与 SDK 子进程退出后不再保留活动授权进程。百度服务端的令牌撤销与本机忘记令牌不同，如需服务端撤销应由用户在授权管理中操作。
+只有 start/verify 显式请求一次隐藏令牌输入。不要把 AccessToken 发到聊天或写在终端参数里。令牌必须有相应网盘权限；本包不代建百度应用或反复触发 OAuth 页面。认证失效或失败时停止，用户处理后才重新运行。此手动输入流程的令牌仅在进程中使用，不额外写磁盘；控制器与 SDK 子进程退出后不再保留活动授权进程。百度服务端的令牌撤销与本机忘记令牌不同，如需服务端撤销应由用户在授权管理中操作。
 
 另一终端或 Codex 可随时执行（均不弹框）：
 
@@ -78,4 +78,9 @@ verify 只用源元数据和目标 OpenAPI 列表，不上传文件或创建目�
 
 ## 离线测试与来源
 
-安装后可执行 `python3 scripts/test_transfer.py`，只使用临时文件与伪造 API，测试路径边界、分页、未知结果隔离、源变化、严格核验和停止行为。真实 stdio MCP 握手测试需安装 requirements，但不连接百度；通过 `--mcp-python /path/to/python3.12` 运行。包内官方 vendor 保留 MIT LICENSE 和原文件 SHA-256；控制脚本与独立安装器的完整性由包外 MANIFEST.json 校验。
+安装后可执行 `python3 scripts/test_transfer.py`，只使用临时文件与伪造 API，测试路径边界、分页、未知结果隔离、源变化、严格核验和停止行为。真实 stdio MCP 握手测试需安装 requirements，但不连接百度；通过 `--mcp-python /path/to/python3.10` 运行。包内官方 vendor 保留 MIT LICENSE 和原文件 SHA-256；控制脚本与独立安装器的完整性由包外 MANIFEST.json 校验。
+
+
+## 服务器文件授权与自动续期
+
+1.2.0 支持使用受保护的服务器凭据文件进行按需续期；参阅 [自动续期](auto-refresh.md)。这与上述手动输入、只在进程中使用令牌的模式不同。不要把凭据放入任务 config.json 或通过 GitHub 发布。SSH 部署会携带续期模块；凭据仍留在目标服务器，不从另一台机器复制或推定可用。

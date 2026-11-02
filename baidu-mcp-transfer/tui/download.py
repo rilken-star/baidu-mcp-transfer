@@ -14,6 +14,9 @@ import urllib.parse
 import urllib.request
 
 from core import SafeError, SECRET, atomic, read, identity, remote_path
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from baidu_auth import Session, AuthError
+from safe_retry import retry_call, Throttled, TemporaryAPIError, diagnostic
 
 STOP = False
 
@@ -36,36 +39,42 @@ def token():
     if SECRET is None:
         raise SafeError('缺少百度授权：请在终端隐藏输入令牌。')
     try:
-        if SECRET.is_symlink() or SECRET.stat().st_mode & 0o077 or SECRET.parent.stat().st_mode & 0o077:
-            raise SafeError('凭据目录需为700、文件需为600，且不能是软链接')
-        for line in SECRET.read_text().splitlines():
-            m = re.match(r'\s*(?:export\s+)?(BAIDU_ACCESS_TOKEN|BAIDU_NETDISK_ACCESS_TOKEN)\s*=\s*(.*)', line)
-            if m:
-                value = m[2].strip().strip("\"\x27")
-                if value:
-                    return value
-    except OSError:
-        raise SafeError('指定的凭据文件不可读。') from None
-    raise SafeError('指定的凭据文件没有百度授权。')
+        return Session().get()
+    except AuthError:
+        raise SafeError('百度授权自动续期失败或配置不可用，请重新授权。') from None
 
 
 class Api:
-    def __init__(self):
-        self.token = token()
+    def __init__(self, access_token=None):
+        self.token = token() if access_token is None else access_token
+        self.auth = Session(self.token)
 
     def request(self, endpoint, method, **values):
-        check()
-        values.update(method=method, access_token=self.token)
-        url = 'https://pan.baidu.com/rest/2.0/xpan/' + endpoint + '?' + urllib.parse.urlencode(values)
+        def once():
+            check()
+            try:
+                self.token=self.auth.get()
+            except AuthError:
+                raise SafeError('百度授权自动续期失败，请重新授权。') from None
+            params={**values,'method':method,'access_token':self.token}
+            url='https://pan.baidu.com/rest/2.0/xpan/'+endpoint+'?'+urllib.parse.urlencode(params)
+            with urllib.request.urlopen(url,timeout=30) as response:
+                value=json.load(response)
+            code=value.get('errno',value.get('error_code'))
+            if code in (1,31034):
+                error=Throttled() if code==31034 else TemporaryAPIError();error.diagnostic={'api_errno':code};raise error
+            if type(code) is not int or code!=0:
+                error=SafeError('百度接口拒绝请求，错误码 %s'%(code if type(code) is int else '?'))
+                if type(code) is int:error.diagnostic={'api_errno':code}
+                raise error
+            return value
         try:
-            with urllib.request.urlopen(url, timeout=30) as r:
-                value = json.load(r)
-        except Exception:
-            raise SafeError('百度接口请求失败，请检查网络和授权') from None
-        code = value.get('errno', value.get('error_code'))
-        if type(code) is not int or code != 0:
-            raise SafeError('百度接口拒绝请求，错误码 %s' % (code if type(code) is int else '?'))
-        return value
+            return retry_call(once,stage='download_metadata')
+        except (InterruptedError,SafeError):raise
+        except Exception as error:
+            failure=SafeError('百度接口请求失败，安全重试后仍未恢复；请检查网络和任务状态。')
+            failure.diagnostic=getattr(error,'diagnostic',diagnostic(error,'download_metadata',1))
+            raise failure from None
 
     def listing(self, path):
         output = []

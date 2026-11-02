@@ -4,6 +4,8 @@ import argparse
 import curses
 import json
 import locale
+import os
+import subprocess
 import sys
 import threading
 import time
@@ -14,10 +16,10 @@ import core
 
 PHASE = {'starting':'启动中','queued':'待启动','scanning':'整理清单','processing':'传输中',
          'verifying':'核验中','complete':'已完成','stopped':'已停止','needs_attention':'需处理',
-         'failed':'失败','interrupted':'进程已退出','mcp_online':'在线'}
+         'failed':'失败','interrupted':'进程已退出','mcp_online':'在线','running':'传输中','waiting_for_regular_files':'排队中'}
 STAGE = {'hashing':'计算分片校验值','starting_download':'准备下载','starting':'计算分片校验值 / 准备上传','metadata':'查询网盘元信息',
          'sending_part':'正在发送分片','accepted_part':'分片已确认','finished':'文件传输结束，等待核验',
-         'downloading':'正在接收文件','listing':'列出指定目录','complete':'完成','unknown_telemetry':'未接入进度'}
+         'downloading':'正在接收文件','listing':'列出指定目录','complete':'完成','retry_wait':'网络重试等待','verifying_after_error':'请求异常，核验网盘结果','unknown_telemetry':'未接入进度','waiting_for_regular_files':'等待普通文件同步完成'}
 
 
 def width(s):
@@ -100,7 +102,7 @@ class App:
             if not source:return
             target=self.prompt(win,'新建上传','网盘目标目录（不会覆盖同名文件）：','/百度网盘传输')
             if not target:return
-            hint='目录中凭据文件将被排除；目录软链接不跟随。'
+            hint='仅模型权重；TXT/图片等不传；仅跟随模型文件链接，目录链接不跟随。'
         else:
             source=self.prompt(win,'新建下载','网盘中的文件 / 目录路径：','/百度网盘传输/example.txt')
             if not source:return
@@ -108,7 +110,7 @@ class App:
             if not target:return
             hint='保留已有文件；中断下载可按 c 使用临时文件继续。'
         if self.confirm(win,'确认'+('上传' if kind=='upload' else '下载'),['源：'+source,'目标：'+target,hint]):
-            task=core.start_upload(source,target) if kind=='upload' else core.start_download(source,target)
+            task=core.start_model_sync(source,target,follow_file_links=True) if kind=='upload' else core.start_download(source,target)
             self.notice='任务已在后台启动：'+task['id'];self.index=max(0,len(core.jobs())-1)
 
     def action(self,fn):
@@ -173,8 +175,8 @@ class App:
                     self.index=next((i for i, row in enumerate(rows) if row['running'] and row['kind'] in ('upload','download')),0)
                     first_refresh=False
                 for r in rows:
-                    if r['running'] and r['stage'] in ('sending_part','accepted_part','downloading'):
-                        r['rate']=self.rates.update(r['id'],r['accounted'])
+                    if r['running'] and r['kind'] in ('upload','download') and r['phase'] not in ('starting','queued','scanning','waiting_for_regular_files'):
+                        r['rate']=self.rates.update(r['id'],r.get('rate_bytes',r['accounted']))
                     else:
                         self.rates.reset(r['id']);r['rate']=0
                 self.index=min(self.index,max(0,len(rows)-1));updated=time.monotonic()
@@ -199,23 +201,72 @@ class App:
             except Exception:self.notice='操作失败，异常详情已隐藏；请检查路径和任务状态。'
 
 
+def prepare_terminal():
+    # Probe in a child: setupterm caches its first successful terminal definition.
+    probe = "import curses;curses.setupterm();raise SystemExit(0 if curses.tigetstr('cup') else 1)"
+    candidates = list(dict.fromkeys((os.environ.get('TERM', ''), 'xterm-256color', 'xterm')))
+    for term in candidates:
+        if not term or term in ('dumb', 'unknown'):
+            continue
+        try:
+            result = subprocess.run([sys.executable, '-c', probe],
+                env={**os.environ, 'TERM':term}, stdin=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=5)
+        except (OSError, subprocess.TimeoutExpired):
+            continue
+        if result.returncode == 0:
+            os.environ['TERM'] = term
+            return
+    raise core.SafeError('缺少可用的终端定义；请安装 ncurses-term 后重试。')
+
+
 def main():
     locale.setlocale(locale.LC_ALL,'')
     parser=argparse.ArgumentParser(description='百度网盘上传 / 下载 TUI（退出界面不停止任务）')
+    parser.add_argument('--authorize',action='store_true',help='隐藏输入应用密钥和授权码，配置可自动续期的授权')
+    parser.add_argument('--check-dir',default='/',help='授权后只读验证的网盘目录，默认 /')
+    parser.add_argument('--sync-models',metavar='LOCAL',help='仅上传模型权重，跳过TXT、图片和其他辅助文件')
+    parser.add_argument('--resume-models',metavar='JOB',help='续传已有模型任务，不新建重复任务')
+    parser.add_argument('--all-files',action='store_true',help='配合 --upload 显式使用原普通文件上传模式')
+    parser.add_argument('--follow-file-links',action='store_true',help='明确允许模型文件链接，不跟随目录链接')
     parser.add_argument('--status',action='store_true',help='输出任务状态 JSON，不打开界面')
     parser.add_argument('--upload',metavar='LOCAL',help='新建上传，须同时指定 --to 网盘目录')
     parser.add_argument('--download',metavar='REMOTE',help='新建下载，须同时指定 --to 本地目录')
     parser.add_argument('--to',metavar='DEST')
     args=parser.parse_args()
+    if args.authorize:
+        if args.status or args.upload or args.download or args.to or args.sync_models or args.resume_models or args.all_files or args.follow_file_links:
+            parser.error('--authorize 不能与传输或状态参数同时使用')
+        sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'scripts'))
+        from authorize import main as authorize_main
+        try:
+            return authorize_main(['--check-dir',args.check_dir])
+        except SystemExit:
+            raise
+        except Exception:
+            raise core.SafeError('授权处理失败，异常详情已隐藏；请检查权限和网络。') from None
+    if sum(bool(v) for v in (args.upload,args.download,args.sync_models,args.resume_models))>1:
+        parser.error('一次只启动或续传一个任务')
+    if args.all_files and not args.upload:
+        parser.error('--all-files 必须与 --upload 同时使用')
+    if args.follow_file_links and (args.all_files or not (args.upload or args.sync_models)):
+        parser.error('--follow-file-links 仅适用于模型上传')
+    if args.resume_models:
+        if args.to or args.status:parser.error('续传任务沿用原配置，不接受 --to 或 --status')
+        print(json.dumps(core.resume_model_sync(args.resume_models),ensure_ascii=False));return
+    if args.sync_models:
+        if not args.to:parser.error('缺少 --to')
+        print(json.dumps(core.start_model_sync(args.sync_models,args.to,args.follow_file_links),ensure_ascii=False));return
     if args.upload and args.download:parser.error('一次只新建一种传输任务')
     if args.upload or args.download:
         if not args.to:parser.error('缺少 --to')
-        task=core.start_upload(args.upload,args.to) if args.upload else core.start_download(args.download,args.to)
+        task=(core.start_upload(args.upload,args.to) if args.all_files else core.start_model_sync(args.upload,args.to,args.follow_file_links)) if args.upload else core.start_download(args.download,args.to)
         print(json.dumps(task,ensure_ascii=False));return
     if args.status:
         print(json.dumps([core.snapshot(t) for t in core.jobs()],ensure_ascii=False,indent=2));return
     if not sys.stdin.isatty() or not sys.stdout.isatty():
         parser.error('交互界面需要终端；请用 ssh -t 登录，或使用 --status')
+    prepare_terminal()
     curses.wrapper(App().main)
 
 if __name__=='__main__':

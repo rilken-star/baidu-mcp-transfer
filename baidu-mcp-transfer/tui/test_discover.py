@@ -7,7 +7,7 @@ class Discover(unittest.TestCase):
   self.tmp=tempfile.TemporaryDirectory();self.r=Path(self.tmp.name)
   self.code=self.r/'code';self.state=self.r/'states';self.jobs=self.r/'jobs';self.proc=self.r/'proc'
   for p in (self.code,self.state,self.jobs,self.proc):p.mkdir()
-  self.patches=[patch.object(core,'CODE_ROOT',self.code),patch.object(core,'STATE_ROOT',self.state),patch.object(core,'JOBS',self.jobs),patch.object(core,'PROC_ROOT',self.proc)]
+  self.patches=[patch.object(core,'CODE_ROOT',self.code),patch.object(core,'STATE_ROOT',self.state),patch.object(core,'JOBS',self.jobs),patch.object(core,'PROC_ROOT',self.proc),patch.object(core,'SYNC_ROOT',self.r/'sync')]
   for p in self.patches:p.start()
  def tearDown(self):
   for p in reversed(self.patches):p.stop()

@@ -64,7 +64,7 @@ def deploy(config):
     buffer = io.BytesIO()
     # Program allowlist: never reads the configured SOURCE or any previous job state.
     with tarfile.open(fileobj=buffer, mode='w:gz') as archive:
-        for relative in ('scripts/common.py', 'scripts/worker.py', 'scripts/mcp_server.py', 'requirements.txt'):
+        for relative in ('scripts/common.py', 'scripts/baidu_auth.py', 'scripts/parallel_upload.py', 'scripts/safe_retry.py', 'scripts/worker.py', 'scripts/mcp_server.py', 'requirements.txt'):
             archive.add(SKILL / relative, arcname=relative, recursive=False)
         for path in sorted((SKILL / 'vendor').rglob('*')):
             if path.is_file() and not path.is_symlink() and '__pycache__' not in path.parts:

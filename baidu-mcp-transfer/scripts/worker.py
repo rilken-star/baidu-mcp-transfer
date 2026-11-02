@@ -18,6 +18,8 @@ import urllib.parse
 import urllib.request
 
 from common import atomic_json, inside, read_json, validate
+from baidu_auth import Session, AuthError
+from safe_retry import retry_call, RequestFailed, Throttled, TemporaryAPIError, diagnostic
 
 logging.disable(logging.CRITICAL)
 STOP = False
@@ -101,22 +103,36 @@ class Baidu:
     """Official OpenAPI metadata only. Never prints HTTP exception strings."""
     def __init__(self, token):
         self.token = token
+        self.auth = Session(token)
 
     def request(self, method, values, post=False):
-        query = urllib.parse.urlencode({'method': method, 'access_token': self.token})
-        url = 'https://pan.baidu.com/rest/2.0/xpan/file?' + query
-        if post:
-            request = urllib.request.Request(url, data=urllib.parse.urlencode(values).encode())
-        else:
-            request = urllib.request.Request(url + '&' + urllib.parse.urlencode(values))
-        try:
+        def once():
+            check_stop()
+            try:
+                self.token = self.auth.get()
+            except AuthError:
+                raise Attention('Baidu authorization refresh failed; renew authorization') from None
+            query = urllib.parse.urlencode({'method':method, 'access_token':self.token})
+            url = 'https://pan.baidu.com/rest/2.0/xpan/file?' + query
+            request = urllib.request.Request(url, data=urllib.parse.urlencode(values).encode()) if post else urllib.request.Request(url+'&'+urllib.parse.urlencode(values))
             with urllib.request.urlopen(request, timeout=30) as response:
-                value = json.load(response)
-        except Exception:
-            raise Attention('Baidu metadata request failed; no credential logged') from None
-        if not isinstance(value, dict) or type(value.get('errno')) is not int or value['errno'] != 0:
-            raise Attention('Baidu rejected metadata request; check authorization and destination')
-        return value
+                value=json.load(response)
+            code=value.get('errno') if isinstance(value,dict) else None
+            if code in (1,31034) and not post:
+                error=Throttled() if code==31034 else TemporaryAPIError();error.diagnostic={'api_errno':code};raise error
+            if type(code) is not int or code != 0:
+                error=Attention('Baidu rejected metadata request; check authorization and destination')
+                if type(code) is int:error.diagnostic={'api_errno':code}
+                raise error
+            return value
+        try:
+            return once() if post else retry_call(once,stage='metadata')
+        except (Stopped,Attention):
+            raise
+        except Exception as error:
+            failure=Attention('Baidu metadata mutation outcome uncertain; no automatic resubmission' if post else 'Baidu metadata request failed after safe retries; no credential logged')
+            failure.diagnostic=getattr(error,'diagnostic',diagnostic(error,'metadata_write' if post else 'metadata',1))
+            raise failure from None
 
     def listing(self, directory):
         rows = []

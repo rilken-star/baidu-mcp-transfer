@@ -18,6 +18,10 @@ sys.path.insert(0, str(vendor))
 spec = importlib.util.spec_from_file_location('official_baidu_mcp', vendor / 'fileupload_tool.py')
 official = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(official)
+from baidu_auth import install_sdk_refresh
+install_sdk_refresh(official)
+from safe_retry import install_sdk_retry
+install_sdk_retry(official, event=lambda *a,**kw:event(*a,**kw))
 # The official module keeps its token in process memory. Remove inherited env.
 os.environ.pop('BAIDU_NETDISK_ACCESS_TOKEN', None)
 original_upload = official.upload_file
@@ -89,8 +93,9 @@ def guarded(local_file_path, remote_path):
         failure = result.get('failure') if isinstance(result, dict) else None
         event('finished', sdk_success=ok, diagnostic=failure if isinstance(failure, dict) else None)
         return {'status': 'success' if ok else 'error'}
-    except Exception:
-        event('failed')
+    except Exception as error:
+        from safe_retry import diagnostic
+        event('failed', diagnostic=getattr(error,'diagnostic',diagnostic(error,'upload',1)))
         return {'status': 'error', 'message': 'Upload result requires destination verification'}
     finally:
         lock.release()
